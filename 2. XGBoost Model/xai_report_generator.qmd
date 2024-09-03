@@ -1,0 +1,260 @@
+---
+title: "XGBoost XAI Report"
+author: "Kunal Choudhary"
+format: html
+editor: visual
+code-copy: true
+code-fold: show
+toc: true
+toc-depth: 4
+execute: 
+  eval: false
+  warning: false
+  message: false
+  cache: true
+---
+
+## Explainable Time Series
+
+```{r, warning=FALSE, message=FALSE}
+library(Metrics)
+library(reshape2)
+library(quantmod)
+library(TTR)
+library(dplyr)
+library(tidyr)
+library(caret)
+library(randomForest)
+library(xgboost)
+library(SHAPforxgboost)
+library(data.table)
+library(dplyr)
+library(zoo)
+library(readr)
+library(lime)
+library(GA)
+library(iml)
+library(ggplot2)
+```
+
+```{r, warning=FALSE, message=FALSE}
+
+tickers = c("RELIANCE.NS","HINDUNILVR.NS", "ITC.NS", "IFBIND.NS","HDFCBANK.NS")
+i = 1
+ticker = tickers[i]
+load(paste0("C:/Users/KUNAL/Downloads/Spring Sem/Dissertation/2. XGBoost Model/Workspace ",ticker,".RData"))
+```
+
+### SHAP Values
+
+Shapely Additive Explanations (SHAP) offer a unified measure to understand the impact of each feature on the model's predictions. They provide a way to decompose the prediction of a model into contributions from each feature, making it clear how each feature influences the outcome.
+
+```{r}
+# SHAP values
+png(file = paste('Train SHAP for', ticker,'.png'), width = 600, height = 500)
+shap_values <- shap.values(xgb_model = final_model, X_train = as.matrix(trainData[, -c(1, ncol(trainData))]))
+shap_long <- shap.prep(shap_contrib = shap_values$shap_score, X_train = as.matrix(trainData[, -c(1, ncol(trainData))]))
+shap.plot.summary(shap_long)+ggtitle(paste('SHAP Summary for',ticker),subtitle = 'Training data')
+dev.off()
+```
+
+```{r}
+# Calculate SHAP values for test data
+png(file = paste('Test SHAP for', ticker,'.png'), width = 600, height = 500)
+shap_values_test <- shap.values(xgb_model = final_model, X_train = as.matrix(testData[, -c(1, ncol(testData))]))
+shap_long_test <- shap.prep(shap_contrib = shap_values_test$shap_score, X_train = as.matrix(testData[, -c(1, ncol(testData))]))
+
+shap.plot.summary(shap_long_test)+ggtitle(paste('SHAP Summary for',ticker),subtitle = 'Test data')
+dev.off()
+```
+
+```{r}
+shap_values = as.data.frame(shap_values_test)
+colnames(shap_values) = c(selected_features, "mean_shap_score","BIAS")
+p = list()
+
+for(i in 1:10){
+  feature_name = selected_features[i]
+  feature_values = testData[,feature_name]
+  
+  # Normalize SHAP values for coloring
+  norm_shap_values <- (shap_values[,feature_name] - min(shap_values[,feature_name])) / (max(shap_values[,feature_name]) - min(shap_values[,feature_name]))
+  
+  # Create data frame for ggplot
+  plot_data <- data.frame(Time = testData$Date, 
+                          FeatureValues = feature_values, 
+                          NormSHAP = norm_shap_values)
+  
+  # Create the plot
+  p[[i]] <- ggplot(plot_data, aes(x = Time, y = FeatureValues)) +
+    geom_tile(aes(fill = NormSHAP), height = Inf) +
+    geom_line(color = 'black') +
+    geom_point(color = 'black') +
+    scale_fill_gradientn(colors = c("blue", "orange", "red"), limits = c(0, 1), name = "Normalized\nSHAP Value") +
+    labs(title = feature_name, y = feature_name) +
+    theme_minimal()
+  
+}
+
+# Plot actual closing prices
+plot_actual <- ggplot(testData, aes(x = Date, y = Close)) +
+  geom_line(color = 'black') + geom_line(aes(x=Date, y=preds), color='red')+
+  labs(title = "Closing Price Over Time", y = "Price") +
+  theme_minimal()
+
+# Combine all plots
+library(gridExtra)
+library(cowplot)
+# Combine all plots
+combined_plot <- plot_grid(plotlist = c(list(plot_actual, p[[1]],p[[2]])), ncol = 1, align = "v")
+png(file = paste('SHAP Over Time p1', ticker,'.png'), width = 600, height = 500)
+plot_grid(combined_plot, rel_widths = c(4, 0.1))
+dev.off()
+
+combined_plot <- plot_grid(plotlist = c(list(p[[3]],p[[4]],p[[5]] )), ncol = 1, align = "v")
+png(file = paste('SHAP Over Time p2', ticker,'.png'), width = 600, height = 500)
+plot_grid(combined_plot, rel_widths = c(4, 0.1))
+dev.off()
+
+combined_plot <- plot_grid(plotlist = c(list(p[[6]],p[[7]],p[[8]] )), ncol = 1, align = "v")
+png(file = paste('SHAP Over Time p3', ticker,'.png'), width = 600, height = 500)
+plot_grid(combined_plot, rel_widths = c(4, 0.1))
+dev.off()
+
+combined_plot <- plot_grid(plotlist = c(list(p[[9]],p[[10]] )), ncol = 1, align = "v")
+png(file = paste('SHAP Over Time p4', ticker,'.png'), width = 600, height = 500)
+plot_grid(combined_plot, rel_widths = c(4, 0.1))
+dev.off()
+```
+
+### Permutation-based Feature Importance
+
+```{r, message=FALSE, warning=FALSE}
+# Permutation-based Feature Importance
+predict_function <- function(model, newdata) {
+  data <- as.matrix(newdata)
+  xgb.DMatrix(data = data)
+  predict(model, data)
+}
+predictor <- Predictor$new(model = final_model, data = trainData[, -c(1, ncol(trainData))],  y = trainData$Close, predict.fun = predict_function)
+imp <- FeatureImp$new(predictor, loss = "rmse")
+png(file = paste('Feature Importance for', ticker,'.png'), width = 600, height = 500)
+plot(imp)+ggtitle(paste('Permutation-based Feature Importance for',ticker))
+dev.off()
+```
+
+### Ceteris Paribus (CP) Profiles
+
+```{r}
+# Ceteris Paribus (CP) Profiles
+library(DALEX)
+predict_function <- function(model, newdata) {
+  newdata_matrix <- as.matrix(newdata)
+  dmatrix <- xgb.DMatrix(data = newdata_matrix)
+  predict(model, dmatrix)
+}
+predictor <- Predictor$new(model = final_model, data = as.data.frame(trainData[, -c(1, ncol(trainData))]), y = trainData$Close, predict.fun = predict_function)
+x_interest <- future[,-c(1, ncol(future))]
+x_interest_df <- as.data.frame(x_interest)
+explainer <- explain(final_model, data = as.data.frame(trainData[, -c(1, ncol(trainData))]), y = trainData$Close, predict_function = predict_function)
+cp <- predict_profile(explainer, new_observation = x_interest_df)
+png(file = paste('CP Profile for', ticker,'.png'), width = 600, height = 500)
+plot(cp)+ggtitle(paste('Ceteris Paribus Profile for',ticker),subtitle = '')
+dev.off()
+```
+
+### Individual Condition Expectation (ICE) Plot
+
+```{r}
+# Individual Conditional Expectation (ICE) Plots
+library(gridExtra)
+feature_ice <- FeatureEffect$new(predictor, feature = "RSI_Close", method = "ice")
+p1 = plot(feature_ice) + ggtitle("ICE Plot for 'RSI'")
+feature_ice2 <- FeatureEffect$new(predictor, feature = "COD", method = "ice")
+p2 = plot(feature_ice2) + ggtitle("ICE Plot for 'COD'")
+png(file = paste('ICE Plot for', ticker,'.png'), width = 600, height = 500)
+grid.arrange(p1, p2, ncol = 1)
+# dev.off()
+```
+
+### Local Interpretable Model-Agnostic Explanations (LIME)
+
+```{r}
+# LIME
+explainer <- lime::lime(as.data.frame(trainData[, -c(1,ncol(trainData))]), final_model, bin_continuous = TRUE)
+explanation <- lime::explain(testData[55:60, -c(1,ncol(testData))], explainer, n_features = 10,feature_select = 'lasso_path')
+png(file = paste('LIME for', ticker,'.png'), width = 700, height = 800)
+plot_features(explanation)
+dev.off()
+```
+
+-   Let's discuss the specific case of the unknown future prediction of 28th June, 2024.
+
+```{r}
+# future forecast explanation
+png(file = paste('Lime Forecast for', ticker,'.png'), width = 600, height = 500)
+plot_features(lime::explain(future[,-c(1,ncol(future))], explainer, n_features = 10,feature_select = 'lasso_path'))
+dev.off()
+```
+
+### SHAP-based Breakdown
+
+Since the LIME approach did not produce viable explanations & insights, let's try a different approach - a SHAP waterfall breakdown plot showing contribution of each feature.
+
+```{r}
+# Flashlight package based - SHAP 
+library("flashlight")
+predict_function <- function(model, newdata) {
+  newdata_matrix <- as.matrix(newdata[,-ncol(newdata)])
+  dmatrix <- xgb.DMatrix(data = newdata_matrix)
+  predict(model, dmatrix)
+}
+explainer <- flashlight(model = final_model, data = trainData[, -1], y = "Close", predict_function = predict_function, label = 'Reliance')
+shap_fi = light_breakdown(explainer, new_obs = future[,-1])
+png(file = paste('SHAP Waterfall for', ticker,'.png'), width = 600, height = 500)
+plot(shap_fi)+ggtitle(paste('SHAP Waterfall for',ticker),subtitle='Future Forecast 28/6/24')
+dev.off()
+```
+
+### Prediction Rule Ensembles (PRE)
+
+```{r}
+## Prediction Rule Ensembles
+library(pre)
+my.df = cbind(testData, preds)
+set.seed(2024)
+pre_model <- pre(preds ~ ., data = my.df[,-c(1, ncol(my.df)-1)])
+summary(pre_model)
+png(file = paste('PRE for', ticker,'.png'), width = 1400, height = 900)
+plot(pre_model, type = "rules", linear.terms = T, plot.dim=c(3,5),nterms=15)
+dev.off()
+```
+
+How well does this model capture the XGBoost model's predictions?
+
+```{r}
+predictions <- predict(pre_model, newdata = testData[,-1])
+png(file = paste('PRE Fit for', ticker,'.png'), width = 600, height = 500)
+
+plot(testData$Date, testData$Close, type = 'l', ylim = c(min(preds, testData$Close), max(preds,testData$Close)), xlab = '', ylab = 'Closing Price',lwd=2, main = paste('PRE Model Fit for', ticker), xaxt = 'n')
+points(testData$Date, testData$Close, cex = 0.5)
+lines(testData$Date, preds, col = 'red', lwd = 2)
+points(testData$Date, preds, col = 'red', cex = 0.5)
+
+lines(testData$Date, predictions, col = 'darkgreen', lwd = 2)
+points(testData$Date, predictions, col = 'darkgreen', cex = 0.5)
+
+legend('topleft',c('Test','XGB Forecast','PRE Forecast'),bty='n',lwd=2,col=c('black','red','darkgreen'))
+
+axis(1, at = stock_data$Date[(split_point + 1):length(stock_data$Date)], 
+     labels = format(stock_data$Date[(split_point + 1):length(stock_data$Date)], "%b-%d"), 
+     las = 2, cex.axis = 0.7)  # Rotate labels and reduce size
+rmse_value <- round(rmse(preds, predictions), 2)
+mape_value <- round(mape(preds, predictions) * 100, 2)  # Convert to percentage
+
+text(x = max(testData$Date)-20, y = round(min(preds, testData$Close)*1.020), labels = 'PRE Approximation Fit:', pos = 4, cex = 0.8, col = "black")
+text(x = max(testData$Date)-20, y = round(min(preds, testData$Close)*1.010), labels = paste("RMSE:", rmse_value), pos = 4, cex = 0.8, col = "navy")
+text(x = max(testData$Date)-20, y = round(min(preds, testData$Close)*1.000), labels = paste("MAPE:", mape_value, "%"), pos = 4, cex = 0.8, col = "navy")
+
+dev.off()
+```
